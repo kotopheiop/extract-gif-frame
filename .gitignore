@@ -51,6 +51,8 @@ temp_*.gif
 preview_*.png
 frame_*.png
 preload_*.png
+# Keep documentation screenshots
+!docs/screenshots/*.png
 
 # Test fixtures (keep test GIF files)
 !tests/fixtures/*.gif

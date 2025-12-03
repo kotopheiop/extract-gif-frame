@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.png
+*.gif
+.DS_Store
+*.log
+.git/
+.gitignore
+.vscode/
+.idea/
+*.md
+!README.md
+setup.ps1
+run.ps1
+*.ps1
+# Keep test fixtures for integration tests
+!tests/fixtures/*.gif
+# Testing artifacts (excluded from Docker image)
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+

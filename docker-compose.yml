@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  extractframe:
+    build: .
+    container_name: extractframe
+    ports:
+      - "5000:5000"
+    volumes:
+      # Монтируем код для разработки (можно закомментировать для production)
+      - .:/app
+    environment:
+      - FLASK_ENV=development
+    restart: unless-stopped
+

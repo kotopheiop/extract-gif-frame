@@ -325,6 +325,7 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
     </style>
 </head>
 <body>
@@ -418,7 +419,7 @@
         let previewTimeout = null;
         let currentFrameIndex = 0;
         let preloadedFrames = null; // Кеш предзагруженных фреймов
-        let isPreloadMode = true;
+        let isPreloadMode = false; // По умолчанию режим "по требованию"
 
         // Обработка клика по области загрузки
         uploadArea.addEventListener('click', () => fileInput.click());
@@ -527,20 +528,16 @@
                 
                 if (isPreloadMode) {
                     // Предзагружаем все фреймы
-                    showSuccess(`Загрузка ${data.frame_count} фреймов...`);
                     await preloadAllFrames();
+                    showPreview(0);
+                    showSuccess(`Все ${data.frame_count} фреймов загружены!`);
                 } else {
                     // Загружаем только первый фрейм
                     await loadPreview(0);
+                    showSuccess(`Файл загружен! Найдено ${data.frame_count} фреймов`);
                 }
                 
                 saveBtn.disabled = false;
-
-                if (isPreloadMode) {
-                    showSuccess(`Все ${data.frame_count} фреймов загружены!`);
-                } else {
-                    showSuccess(`Файл загружен! Найдено ${data.frame_count} фреймов`);
-                }
             } catch (error) {
                 showError(error.message);
                 fileInfo.classList.remove('active');
@@ -552,21 +549,25 @@
 
         // Обработка изменения режима
         document.querySelectorAll('input[name="mode"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
+            radio.addEventListener('change', async (e) => {
                 if (gifInfo && currentFile) {
                     isPreloadMode = e.target.value === 'preload';
                     preloadedFrames = null; // Очищаем кеш
                     
                     if (isPreloadMode) {
                         // Перезагружаем с предзагрузкой
-                        loadingDiv.classList.add('active');
-                        preloadAllFrames().then(() => {
-                            loadingDiv.classList.remove('active');
+                        hideMessages();
+                        previewContainer.innerHTML = '<div class="preview-placeholder">Предзагрузка фреймов...</div>';
+                        try {
+                            await preloadAllFrames();
                             showPreview(currentFrameIndex);
-                        });
+                            showSuccess(`Все ${gifInfo.frame_count} фреймов загружены!`);
+                        } catch (error) {
+                            showError(`Ошибка предзагрузки: ${error.message}`);
+                        }
                     } else {
                         // Загружаем текущий фрейм по требованию
-                        loadPreview(currentFrameIndex);
+                        await loadPreview(currentFrameIndex);
                     }
                 }
             });
@@ -592,12 +593,10 @@
 
                 preloadedFrames = data.frames;
                 
-                // Показываем первый фрейм
-                showPreview(0);
-                
             } catch (error) {
                 showError(`Ошибка предзагрузки: ${error.message}`);
                 preloadedFrames = null;
+                throw error;
             }
         }
 

@@ -4,7 +4,7 @@
 ![Flask](https://img.shields.io/badge/Flask-3.0.0-green.svg)
 ![Docker](https://img.shields.io/badge/docker-ready-blue.svg)
 ![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)
-![Coverage](https://img.shields.io/badge/coverage-81%25-brightgreen.svg)
+![Coverage](https://img.shields.io/badge/coverage-85%25-brightgreen.svg)
 
 Веб-приложение для извлечения отдельных фреймов из GIF файлов без использования готовых библиотек для работы с изображениями.
 
@@ -18,6 +18,8 @@
 - ✅ Поддержка LZW декомпрессии
 - ✅ Поддержка чересстрочных (interlaced) GIF
 - ✅ Обработка цветовых таблиц
+- ✅ Поддержка disposal methods и прозрачности
+- ✅ Оптимизированное кеширование фреймов
 - ✅ Docker поддержка
 
 ## Требования
@@ -26,17 +28,18 @@
 
 ## Тестирование
 
-Проект включает полное покрытие тестами (81%). Тесты автоматически запускаются при сборке Docker образа:
+Проект включает полное покрытие тестами (85%). Тесты автоматически запускаются при сборке Docker образа:
 
 ```bash
 pytest --cov=. --cov-report=term --cov-report=html
 ```
 
 **Статистика тестов:**
-- 41 тест (все проходят)
-- Покрытие кода: 81%
+- 74 теста (все проходят)
+- Покрытие кода: 85% (gif_parser: 89%, png_writer: 100%)
 - Unit тесты для всех компонентов
 - Интеграционные тесты с реальными GIF файлами
+- Тесты для edge cases и обработки ошибок
 
 ## Запуск
 

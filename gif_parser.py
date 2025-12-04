@@ -15,7 +15,11 @@ class GIFParser:
         self.width = 0
         self.height = 0
         self.global_color_table = []
+        self.background_color_index = 0
         self.frames = []
+        self._frame_cache = {}  # Кеш для обработанных фреймов
+        self._last_cached_frame = -1  # Индекс последнего закешированного фрейма
+        self._max_cache_size = 10  # Максимальное количество фреймов в кеше
         
     def read_byte(self, file) -> int:
         """Читает один байт из файла"""
@@ -49,7 +53,7 @@ class GIFParser:
     def parse_header(self, file):
         """Парсит заголовок GIF"""
         signature = self.read_bytes(file, 3).decode('ascii')
-        version = self.read_bytes(file, 3).decode('ascii')
+        self.read_bytes(file, 3)  # version (не используется, но читаем для корректного парсинга)
         
         if signature != 'GIF':
             raise ValueError(f"Неверная сигнатура GIF: {signature}")
@@ -60,12 +64,10 @@ class GIFParser:
         
         packed = self.read_byte(file)
         global_color_table_flag = (packed & 0x80) >> 7
-        color_resolution = ((packed & 0x70) >> 4) + 1
-        sort_flag = (packed & 0x08) >> 3
         global_color_table_size = packed & 0x07
         
-        background_color_index = self.read_byte(file)
-        pixel_aspect_ratio = self.read_byte(file)
+        self.background_color_index = self.read_byte(file)
+        self.read_byte(file)  # pixel_aspect_ratio (не используется)
         
         # Читаем глобальную таблицу цветов, если она есть
         if global_color_table_flag:
@@ -78,6 +80,34 @@ class GIFParser:
             if block_size == 0:
                 break
             self.read_bytes(file, block_size)
+    
+    def parse_graphic_control_extension(self, file) -> dict:
+        """Парсит Graphic Control Extension"""
+        block_size = self.read_byte(file)
+        if block_size != 4:
+            # Пропускаем некорректный блок
+            self.read_bytes(file, block_size)
+            self.read_byte(file)  # Терминатор
+            return {
+                'disposal_method': 0,
+                'transparent_color_index': None,
+                'delay': 0
+            }
+        
+        packed = self.read_byte(file)
+        disposal_method = (packed & 0x1C) >> 2
+        user_input_flag = (packed & 0x02) >> 1
+        transparent_color_flag = packed & 0x01
+        
+        delay = self.read_uint16_le(file)
+        transparent_color_index = self.read_byte(file) if transparent_color_flag else None
+        self.read_byte(file)  # Терминатор
+        
+        return {
+            'disposal_method': disposal_method,
+            'transparent_color_index': transparent_color_index,
+            'delay': delay
+        }
     
     def parse_image_descriptor(self, file) -> Optional[dict]:
         """Парсит дескриптор изображения и возвращает данные фрейма"""
@@ -95,7 +125,6 @@ class GIFParser:
         packed = self.read_byte(file)
         local_color_table_flag = (packed & 0x80) >> 7
         interlace_flag = (packed & 0x40) >> 6
-        sort_flag = (packed & 0x20) >> 5
         local_color_table_size = packed & 0x07
         
         # Читаем локальную таблицу цветов, если есть
@@ -299,62 +328,102 @@ class GIFParser:
         
         return result
     
-    def frame_to_rgb(self, frame_data: dict) -> List[List[Tuple[int, int, int]]]:
-        """Преобразует данные фрейма в RGB матрицу"""
-        width = frame_data['width']
-        height = frame_data['height']
-        color_table = frame_data['color_table']
+    def frame_to_rgb(self, frame_data: dict, canvas: Optional[List[List[Tuple[int, int, int]]]] = None) -> List[List[Tuple[int, int, int]]]:
+        """Преобразует данные фрейма в RGB матрицу и накладывает на холст"""
+        frame_width = frame_data['width']
+        frame_height = frame_data['height']
+        frame_left = frame_data.get('left', 0)
+        frame_top = frame_data.get('top', 0)
+        color_table = frame_data.get('color_table', [])
+        transparent_color_index = frame_data.get('transparent_color_index')
+        
+        # Создаем или используем существующий холст
+        if canvas is None:
+            # Если нет координат, создаем холст размером с фреймом (для обратной совместимости с тестами)
+            if 'left' not in frame_data or 'top' not in frame_data:
+                canvas_width = frame_width
+                canvas_height = frame_height
+                frame_left = 0
+                frame_top = 0
+            else:
+                canvas_width = self.width
+                canvas_height = self.height
+            
+            # Используем цвет фона из глобальной таблицы цветов, если доступен
+            background_color = (0, 0, 0)  # По умолчанию черный
+            if self.global_color_table and 0 <= self.background_color_index < len(self.global_color_table):
+                background_color = self.global_color_table[self.background_color_index]
+            # Оптимизированное создание холста
+            canvas = [[background_color] * canvas_width for _ in range(canvas_height)]
         
         if not color_table:
-            # Если нет таблицы цветов, используем чёрный
-            return [[(0, 0, 0) for _ in range(width)] for _ in range(height)]
+            # Если нет таблицы цветов, возвращаем холст без изменений
+            return canvas
         
         # Декомпрессия LZW
         pixel_indices = self.lzw_decompress(
             frame_data['lzw_data'],
             frame_data['lzw_min_code_size'],
-            width,
-            height
+            frame_width,
+            frame_height
         )
         
-        if len(pixel_indices) < width * height:
+        if len(pixel_indices) < frame_width * frame_height:
             # Дополняем недостающие пиксели
             if pixel_indices:
                 last_index = pixel_indices[-1]
-                pixel_indices.extend([last_index] * (width * height - len(pixel_indices)))
+                pixel_indices.extend([last_index] * (frame_width * frame_height - len(pixel_indices)))
             else:
-                pixel_indices = [0] * (width * height)
+                pixel_indices = [0] * (frame_width * frame_height)
         
         # Деинтерлейсинг, если нужно
         if frame_data['interlace']:
-            pixel_indices = self.deinterlace(pixel_indices, width, height)
+            pixel_indices = self.deinterlace(pixel_indices, frame_width, frame_height)
         
-        # Преобразование в RGB
-        rgb_matrix = []
-        for y in range(height):
-            row = []
-            for x in range(width):
-                idx = y * width + x
+        # Накладываем фрейм на холст
+        canvas_height = len(canvas)
+        canvas_width = len(canvas[0]) if canvas else 0
+        
+        for y in range(frame_height):
+            canvas_y = frame_top + y
+            if canvas_y < 0 or canvas_y >= canvas_height:
+                continue
+                
+            for x in range(frame_width):
+                canvas_x = frame_left + x
+                if canvas_x < 0 or canvas_x >= canvas_width:
+                    continue
+                
+                idx = y * frame_width + x
                 if idx < len(pixel_indices):
                     index = pixel_indices[idx]
+                    
+                    # Пропускаем прозрачные пиксели
+                    if transparent_color_index is not None and index == transparent_color_index:
+                        continue
+                    
                     # Проверяем границы таблицы цветов
                     if 0 <= index < len(color_table):
-                        row.append(color_table[index])
-                    else:
-                        row.append((0, 0, 0))  # Чёрный по умолчанию
-                else:
-                    row.append((0, 0, 0))  # Чёрный по умолчанию
-            rgb_matrix.append(row)
+                        canvas[canvas_y][canvas_x] = color_table[index]
         
-        return rgb_matrix
+        return canvas
+    
+    def clear_cache(self):
+        """Очищает кеш фреймов"""
+        self._frame_cache.clear()
+        self._last_cached_frame = -1
     
     def parse(self) -> List[dict]:
         """Парсит весь GIF файл и возвращает список фреймов"""
+        # Очищаем кеш при новом парсинге
+        self.clear_cache()
+        
         with open(self.file_path, 'rb') as f:
             # Парсим заголовок
             self.parse_header(f)
             
             frames = []
+            current_gce = None  # Текущий Graphic Control Extension
             
             # Парсим расширения и изображения
             while True:
@@ -363,10 +432,8 @@ class GIFParser:
                 if byte == 0x21:  # Расширение
                     extension_type = self.read_byte(f)
                     if extension_type == 0xF9:  # Graphic Control Extension
-                        # Пропускаем Graphic Control Extension
-                        block_size = self.read_byte(f)
-                        self.read_bytes(f, block_size)
-                        self.read_byte(f)  # Терминатор
+                        # Сохраняем Graphic Control Extension для следующего фрейма
+                        current_gce = self.parse_graphic_control_extension(f)
                     elif extension_type == 0xFE:  # Comment Extension
                         self.skip_data_subblocks(f)
                     elif extension_type == 0x01:  # Plain Text Extension
@@ -381,7 +448,16 @@ class GIFParser:
                     f.seek(f.tell() - 1)
                     frame_data = self.parse_image_descriptor(f)
                     if frame_data:
+                        # Добавляем данные Graphic Control Extension к фрейму
+                        if current_gce:
+                            frame_data.update(current_gce)
+                        else:
+                            # Значения по умолчанию
+                            frame_data['disposal_method'] = 0
+                            frame_data['transparent_color_index'] = None
+                            frame_data['delay'] = 0
                         frames.append(frame_data)
+                        current_gce = None  # Сбрасываем после использования
                 
                 elif byte == 0x3B:  # Trailer (конец файла)
                     break
@@ -393,13 +469,102 @@ class GIFParser:
         self.frames = frames
         return frames
     
+    def copy_canvas(self, canvas: List[List[Tuple[int, int, int]]]) -> List[List[Tuple[int, int, int]]]:
+        """Создает глубокую копию холста (оптимизированная версия)"""
+        return [row[:] for row in canvas]
+    
     def get_frame(self, frame_index: int) -> Optional[List[List[Tuple[int, int, int]]]]:
-        """Получает указанный фрейм в виде RGB матрицы"""
+        """Получает указанный фрейм в виде RGB матрицы с учетом всех предыдущих фреймов"""
         if not self.frames:
             self.parse()
         
         if frame_index < 0 or frame_index >= len(self.frames):
             return None
         
-        return self.frame_to_rgb(self.frames[frame_index])
+        # Проверяем кеш
+        if frame_index in self._frame_cache:
+            return self.copy_canvas(self._frame_cache[frame_index])
+        
+        # Находим ближайший закешированный фрейм перед нужным
+        cached_before = None
+        cached_before_index = -1
+        for cached_idx in sorted(self._frame_cache.keys(), reverse=True):
+            if cached_idx < frame_index:
+                cached_before = self._frame_cache[cached_idx]
+                cached_before_index = cached_idx
+                break
+        
+        # Начинаем с ближайшего закешированного фрейма или с начала
+        start_index = cached_before_index + 1 if cached_before else 0
+        canvas = None
+        
+        # Если есть закешированный фрейм перед нужным, используем его как основу
+        if cached_before is not None:
+            canvas = self.copy_canvas(cached_before)
+        
+        # Сохраняем состояние холста перед каждым фреймом для disposal method 3
+        saved_states = {}  # Индекс фрейма -> состояние холста
+        
+        # Обрабатываем фреймы от start_index до нужного включительно
+        for i in range(start_index, frame_index + 1):
+            frame_data = self.frames[i]
+            disposal_method = frame_data.get('disposal_method', 0)
+            
+            # Сохраняем состояние холста ПЕРЕД применением фрейма, если у него disposal method 3
+            if disposal_method == 3 and canvas is not None:
+                saved_states[i] = self.copy_canvas(canvas)
+            
+            # Применяем disposal method предыдущего фрейма перед обработкой текущего
+            if i > 0 and canvas is not None:
+                prev_disposal = self.frames[i - 1].get('disposal_method', 0)
+                prev_frame = self.frames[i - 1]
+                prev_left = prev_frame['left']
+                prev_top = prev_frame['top']
+                prev_width = prev_frame['width']
+                prev_height = prev_frame['height']
+                
+                if prev_disposal == 2:  # Restore to background color
+                    # Восстанавливаем фон для области предыдущего фрейма
+                    background_color = (0, 0, 0)  # По умолчанию черный
+                    if self.global_color_table and 0 <= self.background_color_index < len(self.global_color_table):
+                        background_color = self.global_color_table[self.background_color_index]
+                    for y in range(prev_height):
+                        canvas_y = prev_top + y
+                        if 0 <= canvas_y < self.height:
+                            for x in range(prev_width):
+                                canvas_x = prev_left + x
+                                if 0 <= canvas_x < self.width:
+                                    canvas[canvas_y][canvas_x] = background_color
+                
+                elif prev_disposal == 3:  # Restore to previous
+                    # Восстанавливаем сохраненное состояние (до применения предыдущего фрейма)
+                    if (i - 1) in saved_states:
+                        saved_canvas = saved_states[i - 1]
+                        for y in range(prev_height):
+                            canvas_y = prev_top + y
+                            if 0 <= canvas_y < self.height:
+                                for x in range(prev_width):
+                                    canvas_x = prev_left + x
+                                    if 0 <= canvas_x < self.width:
+                                        canvas[canvas_y][canvas_x] = saved_canvas[canvas_y][canvas_x]
+            
+            # Накладываем текущий фрейм на холст
+            canvas = self.frame_to_rgb(frame_data, canvas)
+            
+            # Кешируем только если кеш не переполнен или это последний фрейм
+            # Кешируем последние N фреймов для оптимизации последовательного доступа
+            if len(self._frame_cache) < self._max_cache_size or i == frame_index:
+                self._frame_cache[i] = self.copy_canvas(canvas)
+                self._last_cached_frame = i
+                
+                # Очищаем старые записи, если кеш переполнен
+                if len(self._frame_cache) > self._max_cache_size:
+                    # Удаляем самый старый фрейм из кеша
+                    oldest_key = min(self._frame_cache.keys())
+                    del self._frame_cache[oldest_key]
+                    # Обновляем last_cached_frame
+                    if self._last_cached_frame == oldest_key:
+                        self._last_cached_frame = max(self._frame_cache.keys()) if self._frame_cache else -1
+        
+        return canvas
 

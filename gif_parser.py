@@ -19,7 +19,7 @@ class GIFParser:
         self.frames = []
         self._frame_cache = {}  # Кеш для обработанных фреймов
         self._last_cached_frame = -1  # Индекс последнего закешированного фрейма
-        self._max_cache_size = 10  # Максимальное количество фреймов в кеше
+        self._max_cache_size = 50  # Максимальное количество фреймов в кеше (увеличено для больших GIF)
         
     def read_byte(self, file) -> int:
         """Читает один байт из файла"""

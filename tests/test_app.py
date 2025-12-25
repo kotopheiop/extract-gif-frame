@@ -83,6 +83,70 @@ class TestApp:
         response = client.post('/api/preload')
         assert response.status_code == 400
     
+    def test_preload_stream_endpoint_no_file(self, client):
+        """Тест /api/preload-stream без файла"""
+        response = client.post('/api/preload-stream')
+        assert response.status_code == 400
+        data = response.get_json()
+        assert 'error' in data
+    
+    def test_preload_stream_endpoint_empty_file(self, client):
+        """Тест /api/preload-stream с пустым файлом"""
+        response = client.post('/api/preload-stream', data={})
+        assert response.status_code == 400
+    
+    def test_preload_stream_endpoint_invalid_gif(self, client):
+        """Тест /api/preload-stream с невалидным GIF"""
+        with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as f:
+            f.write(b'invalid gif data')
+            temp_path = f.name
+        
+        try:
+            with open(temp_path, 'rb') as file:
+                response = client.post('/api/preload-stream',
+                                     data={'file': (file, 'test.gif')})
+                # Должен вернуть 200 (SSE), но с ошибкой в потоке
+                assert response.status_code == 200
+                assert response.mimetype == 'text/event-stream'
+                
+                # Читаем первые данные из потока
+                data = response.data.decode('utf-8')
+                # Должен быть SSE формат с ошибкой
+                assert 'data:' in data or 'error' in data.lower()
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+    
+    def test_preload_stream_endpoint_valid_gif(self, client):
+        """Тест /api/preload-stream с валидным GIF"""
+        # Создаем минимальный валидный GIF
+        gif_data = b'GIF89a\x01\x00\x01\x00\x00\x00\x00!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x04\x01\x00;'
+        
+        with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as f:
+            f.write(gif_data)
+            temp_path = f.name
+        
+        try:
+            with open(temp_path, 'rb') as file:
+                response = client.post('/api/preload-stream',
+                                     data={'file': (file, 'test.gif')})
+                assert response.status_code == 200
+                assert response.mimetype == 'text/event-stream'
+                
+                # Проверяем заголовки
+                assert response.headers.get('Cache-Control') == 'no-cache'
+                assert response.headers.get('X-Accel-Buffering') == 'no'
+                
+                # Читаем данные из потока
+                data = response.data.decode('utf-8')
+                # Должен быть SSE формат
+                assert 'data:' in data
+                # Должен быть прогресс
+                assert 'progress' in data or 'complete' in data or 'error' in data
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+    
     def test_404_page(self, client):
         """Тест несуществующей страницы"""
         response = client.get('/nonexistent')
